@@ -1,0 +1,12 @@
+DROP TABLE IF EXISTS lakehouse.bench_gzip.customer;
+DROP TABLE IF EXISTS lakehouse.bench_gzip.orders;
+DROP TABLE IF EXISTS lakehouse.bench_gzip.lineitem;
+DROP SCHEMA IF EXISTS lakehouse.bench_gzip;
+DROP TABLE IF EXISTS lakehouse.bench_zstd.customer;
+DROP TABLE IF EXISTS lakehouse.bench_zstd.orders;
+DROP TABLE IF EXISTS lakehouse.bench_zstd.lineitem;
+DROP SCHEMA IF EXISTS lakehouse.bench_zstd;
+DROP TABLE IF EXISTS lakehouse.bench_snappy.customer;
+DROP TABLE IF EXISTS lakehouse.bench_snappy.orders;
+DROP TABLE IF EXISTS lakehouse.bench_snappy.lineitem;
+DROP SCHEMA IF EXISTS lakehouse.bench_snappy;
