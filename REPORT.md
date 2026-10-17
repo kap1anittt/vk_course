@@ -165,22 +165,65 @@ SELECT count(*) FROM lakehouse.silver.orders;
 
 | Инструмент | Почему выбрала именно его |
 |---|---|
-| Metabase | Это BI, то есть то, ради чего вообще строится Gold: аналитик открывает таблицу и сразу строит отчёт без SQL. Драйвер Trino в Metabase встроенный, поэтому он подключается к моему Trino, а через него видит все Iceberg-таблицы из Lakekeeper, включая Bronze. Ничего копировать не нужно. Образ один, запускается одной командой и весит меньше Spark. |
+| Spark 3.5.6 | Spark читает Iceberg напрямую через REST-каталог Lakekeeper, Trino ему для этого не нужен. На этом хорошо видно главное преимущество lakehouse: два разных движка работают с одними и теми же таблицами Bronze, а данные никуда не копируются. Metabase или Superset тоже подключились бы, но только через мой же Trino, то есть движок остался бы тот же. Кроме того, Spark хорошо подходит для тяжёлых пакетных ETL, и именно он обычно пересчитывает Bronze в Silver на больших объёмах. Doris и StarRocks тоже умеют читать Iceberg, но на sf1 их отдельный кластер избыточен. |
 
-Сначала я хотела поднять Spark: он умеет читать Iceberg напрямую через REST-каталог Lakekeeper. Но образ `apache/spark:3.5.6` так и не скачался, Docker Hub несколько раз подряд отвечал `TLS handshake timeout`. Кроме того, для Spark нужно отдельно подтягивать jar-файлы Iceberg и AWS SDK. Поэтому я выбрала Metabase.
+С первого раза образ `apache/spark:3.5.6` не скачался, Docker Hub несколько раз отвечал `TLS handshake timeout`. Со второй попытки всё прошло. Отдельный контейнер со Spark постоянно не держу: запускаю его разово в той же docker-сети `lakehouse_default`, в которой работает стек.
 
-Скрипт развёртывания (Metabase подключается к той же docker-сети, что и стек):
+Скрипт запуска лежит в [spark/run_spark_sql.sh](spark/run_spark_sql.sh). Главное в нём:
 
 ```bash
-docker run -d --name metabase \
-  --network lakehouse_default \
-  -p 3000:3000 \
-  metabase/metabase:v0.52.4
+docker run --rm --name spark --network lakehouse_default -v "$PWD/sql:/sql" -e HOME=/tmp apache/spark:3.5.6 \
+  /opt/spark/bin/spark-sql --driver-memory 2g \
+  --packages org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.9.2,org.apache.iceberg:iceberg-aws-bundle:1.9.2 \
+  --conf spark.sql.catalog.lakehouse=org.apache.iceberg.spark.SparkCatalog \
+  --conf spark.sql.catalog.lakehouse.type=rest \
+  --conf spark.sql.catalog.lakehouse.uri=http://lakekeeper:8181/catalog \
+  --conf spark.sql.catalog.lakehouse.warehouse=lakehouse \
+  --conf spark.sql.catalog.lakehouse.io-impl=org.apache.iceberg.aws.s3.S3FileIO \
+  --conf spark.sql.catalog.lakehouse.s3.endpoint=http://minio:9000 \
+  --conf spark.sql.catalog.lakehouse.s3.path-style-access=true \
+  ...   # ключи MinIO и регион, полностью в скрипте
+  -f /sql/10_spark_bronze.sql
 ```
 
-Подключение в UI (http://localhost:3000): Admin → Databases → Add database → тип **Starburst (Trino)**, host `trino`, port `8080`, catalog `lakehouse`, schema `bronze`, user `admin`, пароль пустой. После синхронизации в разделе Browse data появляются таблицы `customer`, `orders` и `lineitem` из Bronze, и по ним можно строить вопросы.
+- `--packages` скачивает из Maven Iceberg для Spark и AWS-бандл для работы с S3. Это около 100 МБ, и качаются они один раз за запуск.
+- `catalog.lakehouse.type=rest` и `uri` направляют Spark в тот же Lakekeeper, что и Trino, а `warehouse=lakehouse` выбирает тот же warehouse.
+- `S3FileIO` и `s3.*` нужны, чтобы Spark читал parquet-файлы напрямую из MinIO.
 
-Сейчас образ Metabase ещё скачивается, поэтому скриншоты с данными Bronze я добавлю, как только он поднимется.
+Что делала: запустила `./spark/run_spark_sql.sh`, он выполнил [sql/10_spark_bronze.sql](sql/10_spark_bronze.sql). Вывод Spark:
+
+```
+-- SHOW NAMESPACES IN lakehouse
+bronze
+silver
+gold
+bench_gzip
+bench_zstd
+bench_snappy
+
+-- SHOW TABLES IN lakehouse.bronze
+customer
+orders
+lineitem
+
+-- count(*) по таблицам Bronze
+customer   150000
+orders     1500000
+lineitem   6001215
+
+-- снапшоты lineitem (метаданные Iceberg)
+1435780585209411755   2026-10-11 23:21:08.172   append
+
+-- Q18 по Bronze, первые 10 строк (14.3 с)
+Customer#000128120  128120  4722021  1994-04-07  544089.09  323.0
+Customer#000144617  144617  3043270  1997-02-12  530604.44  317.0
+Customer#000013940  13940   2232932  1997-04-13  522720.61  304.0
+Customer#000066790  66790   2199712  1996-09-30  515531.82  327.0
+Customer#000046435  46435   4745607  1997-07-03  508047.99  309.0
+...
+```
+
+Spark увидел все схемы, которые я создала через Trino. Количество строк в Bronze совпало с тем, что показывал Trino, а снапшот у lineitem ровно тот, который появился при CTAS из Trino. Q18, посчитанный Spark по Bronze, дал те же первые строки, что лежат в моей витрине Gold. Значит, оба движка видят одни и те же данные через один каталог. По времени Spark медленнее Trino: 14.3 с против примерно 2 с. Сюда входит прогрев JVM в одноразовом запуске, к тому же Spark рассчитан на долгие пакетные задачи, а не на быстрые интерактивные запросы. Поэтому для аналитики я оставила бы Trino, а Spark взяла бы для тяжёлых пересчётов слоёв.
 
 ## 7. Выводы
 

@@ -35,6 +35,8 @@ docker exec -it trino trino --output-format ALIGNED --file /sql/05_benchmark.sql
 | sql/07_schema_evolution.sql | Добавление и переименование колонки на Silver |
 | sql/08_time_travel.sql | Ошибочное удаление строк и просмотр снапшотов |
 | sql/09_restore.sql | Восстановление таблицы из снапшота |
+| sql/10_spark_bronze.sql | Чтение Bronze из Spark и Q18 по Bronze |
+| spark/run_spark_sql.sh | Запуск Spark SQL с каталогом Lakekeeper (`./spark/run_spark_sql.sh`) |
 | sql/99_drop_bench.sql | Удаление таблиц бенчмарка перед повторным прогоном |
 
 Веб-интерфейсы: MinIO http://localhost:9001 (minioadmin / minioadmin123), Trino http://localhost:8080.
