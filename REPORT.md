@@ -165,9 +165,22 @@ SELECT count(*) FROM lakehouse.silver.orders;
 
 | Инструмент | Почему выбрала именно его |
 |---|---|
-| Spark (не развёрнут) | Spark умеет работать с Iceberg через тот же REST-каталог Lakekeeper. Это наглядно показывает главное преимущество lakehouse: два разных движка работают с одними и теми же таблицами Bronze без копирования данных. Spark также полезен для тяжёлых ETL-задач, где Trino хуже справляется с длинными пакетными задачами. |
+| Metabase | Это BI, то есть то, ради чего вообще строится Gold: аналитик открывает таблицу и сразу строит отчёт без SQL. Драйвер Trino в Metabase встроенный, поэтому он подключается к моему Trino, а через него видит все Iceberg-таблицы из Lakekeeper, включая Bronze. Ничего копировать не нужно. Образ один, запускается одной командой и весит меньше Spark. |
 
-Развернуть Spark не получилось. При скачивании образа `apache/spark:3.5.6` Docker Hub несколько раз подряд отвечал `TLS handshake timeout`. Этот пункт я доделаю отдельно, когда образ удастся скачать.
+Сначала я хотела поднять Spark: он умеет читать Iceberg напрямую через REST-каталог Lakekeeper. Но образ `apache/spark:3.5.6` так и не скачался, Docker Hub несколько раз подряд отвечал `TLS handshake timeout`. Кроме того, для Spark нужно отдельно подтягивать jar-файлы Iceberg и AWS SDK. Поэтому я выбрала Metabase.
+
+Скрипт развёртывания (Metabase подключается к той же docker-сети, что и стек):
+
+```bash
+docker run -d --name metabase \
+  --network lakehouse_default \
+  -p 3000:3000 \
+  metabase/metabase:v0.52.4
+```
+
+Подключение в UI (http://localhost:3000): Admin → Databases → Add database → тип **Starburst (Trino)**, host `trino`, port `8080`, catalog `lakehouse`, schema `bronze`, user `admin`, пароль пустой. После синхронизации в разделе Browse data появляются таблицы `customer`, `orders` и `lineitem` из Bronze, и по ним можно строить вопросы.
+
+Сейчас образ Metabase ещё скачивается, поэтому скриншоты с данными Bronze я добавлю, как только он поднимется.
 
 ## 7. Выводы
 
